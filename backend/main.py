@@ -7,6 +7,8 @@ from typing import Optional, List
 from pydantic import BaseModel
 import models, crud, auth
 from database import engine, get_db
+from scheduler import create_scheduler
+from bot import send_telegram, get_daily_report, get_purchase_suggestions, get_low_stock_alert
 
 app = FastAPI(title="DokonPro ERP API v2", version="2.0.0")
 
@@ -44,6 +46,18 @@ async def startup():
                 "branch_id": branch_id,
                 "is_active": True,
             })
+
+    # Start background scheduler
+    scheduler = create_scheduler()
+    scheduler.start()
+    app.state.scheduler = scheduler
+    print("[OK] Scheduler ishga tushdi (Telegram hisobotlar yoqilgan)")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    if hasattr(app.state, 'scheduler'):
+        app.state.scheduler.shutdown()
 
 
 # ─── PYDANTIC SCHEMAS ─────────────────────────────────────────────────────────
@@ -352,3 +366,56 @@ async def dashboard_analytics(branch_id: int = None, current_user: models.User =
 @app.get("/analytics/chart")
 async def chart_data(current_user: models.User = Depends(auth.get_current_user), db: AsyncSession = Depends(get_db)):
     return await crud.get_sales_chart_data(db)
+
+
+# ─── TELEGRAM BOT ENDPOINTS ───────────────────────────────────────────────────
+
+@app.post("/bot/send-daily-report")
+async def trigger_daily_report(current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager))):
+    """Qo'lda kunlik hisobotni Telegram ga yuborish"""
+    report = await get_daily_report()
+    success = await send_telegram(report)
+    return {"success": success, "message": "Hisobot yuborildi" if success else "Xatolik (Token yoki Chat ID tekshiring)"}
+
+
+@app.post("/bot/send-low-stock-alert")
+async def trigger_low_stock_alert(current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager))):
+    """Qo'lda kam zaxira ogohlantirishini yuborish"""
+    alert = await get_low_stock_alert()
+    if not alert:
+        return {"success": True, "message": "Kam zaxira yo'q — hamma tovarlar yetarli"}
+    success = await send_telegram(alert)
+    return {"success": success}
+
+
+# ─── PURCHASE SUGGESTIONS (AVTOMATIK BUYURTMA) ───────────────────────────────
+
+@app.get("/purchase-suggestions")
+async def get_purchase_suggestions_api(current_user: models.User = Depends(auth.get_current_user)):
+    """Sotib olish kerak bo'lgan tovarlar ro'yxati (avtomatik tavsiya)"""
+    return await get_purchase_suggestions()
+
+
+@app.post("/purchase-suggestions/send-telegram")
+async def send_purchase_suggestions_to_telegram(current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager))):
+    """Buyurtma tavsiyalarini Telegram ga yuborish"""
+    suggestions = await get_purchase_suggestions()
+    if not suggestions:
+        return {"success": True, "message": "Barcha tovarlar yetarli, buyurtma kerak emas"}
+
+    lines = "\n".join([
+        f"  {i+1}. <b>{s['product_name']}</b>\n     Hozir: {s['current_qty']:.0f} | Buyurtma: <b>{s['suggested_qty']:.0f} dona</b> | ~{s['estimated_cost']:,.0f} so'm"
+        for i, s in enumerate(suggestions)
+    ])
+
+    message = f"""\U0001f6d2 <b>AVTOMATIK BUYURTMA RO'YXATI</b>
+\U0001f4c5 {__import__('datetime').date.today().strftime("%d.%m.%Y")}
+
+Quyidagi tovarlarni sotib olish tavsiya etiladi:
+
+{lines}
+
+<i>Jami {len(suggestions)} ta tovar — Tizim avtomatik tayyorladi</i>"""
+
+    success = await send_telegram(message)
+    return {"success": success, "count": len(suggestions)}
