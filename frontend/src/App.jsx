@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Package, ShoppingCart, Users, Truck,
-  LogOut, History as HistoryIcon, Clock, ChevronRight, AlertCircle, AlertTriangle
+  LogOut, History as HistoryIcon, Clock, ChevronRight, AlertCircle,
+  AlertTriangle, BookOpen, BarChart2, PackageX, Settings
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
@@ -12,26 +13,34 @@ import Supply from './Supply';
 import Products from './Products';
 import History from './History';
 import LowStock from './LowStock';
+import DebtBook from './DebtBook';
+import Analytics from './Analytics';
+import WriteOff from './WriteOff';
+import SettingsPage from './SettingsPage';
 import Login from './Login';
 import api from './api';
 
 // ─── SIDEBAR ─────────────────────────────────────────────────────────────────
 
 const ROLE_MENUS = {
-  owner:    ['dashboard','products','pos','crm','supply','history','lowstock'],
-  manager:  ['dashboard','products','pos','crm','supply','history','lowstock'],
-  cashier:  ['pos'],
-  warehouse:['products','supply','lowstock'],
+  owner:    ['dashboard','analytics','products','pos','crm','supply','history','lowstock','debts','writeoff','settings'],
+  manager:  ['dashboard','analytics','products','pos','crm','supply','history','lowstock','debts','writeoff'],
+  cashier:  ['pos','debts'],
+  warehouse:['products','supply','lowstock','writeoff'],
 };
 
 const MENU_ITEMS = [
-  { key: 'dashboard', path: '/',          icon: LayoutDashboard, label: 'Bosh Sahifa' },
-  { key: 'products',  path: '/products',  icon: Package,          label: 'Mahsulotlar' },
-  { key: 'pos',       path: '/pos',       icon: ShoppingCart,     label: 'Kassa (POS)' },
-  { key: 'crm',       path: '/crm',       icon: Users,            label: 'Mijozlar (CRM)' },
-  { key: 'supply',    path: '/supply',    icon: Truck,            label: "Ta'minot" },
-  { key: 'history',   path: '/history',   icon: HistoryIcon,      label: 'Sotuvlar Tarixi' },
-  { key: 'lowstock',  path: '/lowstock',  icon: AlertTriangle,    label: 'Kam Zaxira & Buyurtma' },
+  { key: 'dashboard',  path: '/',           icon: LayoutDashboard, label: 'Bosh Sahifa' },
+  { key: 'analytics',  path: '/analytics',  icon: BarChart2,        label: 'Egasi Analitika' },
+  { key: 'products',   path: '/products',   icon: Package,          label: 'Mahsulotlar' },
+  { key: 'pos',        path: '/pos',        icon: ShoppingCart,     label: 'Kassa (POS)' },
+  { key: 'crm',        path: '/crm',        icon: Users,            label: 'Mijozlar' },
+  { key: 'debts',      path: '/debts',      icon: BookOpen,         label: 'Qarz Kitobi' },
+  { key: 'supply',     path: '/supply',     icon: Truck,            label: "Ta'minot" },
+  { key: 'history',    path: '/history',    icon: HistoryIcon,      label: 'Sotuvlar Tarixi' },
+  { key: 'lowstock',   path: '/lowstock',   icon: AlertTriangle,    label: 'Kam Zaxira' },
+  { key: 'writeoff',   path: '/writeoff',   icon: PackageX,         label: 'Chiqimga Chiqarish' },
+  { key: 'settings',   path: '/settings',   icon: Settings,         label: 'Sozlamalar' },
 ];
 
 function Sidebar({ user, onLogout }) {
@@ -194,10 +203,14 @@ export default function App() {
             <Route path="/"         element={<Dashboard />} />
             <Route path="/products" element={<Products />} />
             <Route path="/pos"      element={<POS />} />
-            <Route path="/crm"      element={<CRM />} />
-            <Route path="/supply"   element={<Supply />} />
-            <Route path="/history"  element={<History />} />
-            <Route path="/lowstock" element={<LowStock />} />
+            <Route path="/crm"       element={<CRM />} />
+            <Route path="/supply"    element={<Supply />} />
+            <Route path="/history"   element={<History />} />
+            <Route path="/lowstock"  element={<LowStock />} />
+            <Route path="/debts"     element={<DebtBook />} />
+            <Route path="/analytics" element={<Analytics />} />
+            <Route path="/writeoff"  element={<WriteOff />} />
+            <Route path="/settings"  element={<SettingsPage />} />
           </Routes>
         </main>
       </div>
