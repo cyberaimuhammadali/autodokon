@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard, Package, ShoppingCart, Users, Truck,
-  LogOut, History as HistoryIcon, Clock, ChevronRight, AlertCircle
+  LogOut, History as HistoryIcon, Clock, ChevronRight, AlertCircle, AlertTriangle
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
@@ -11,25 +11,27 @@ import CRM from './CRM';
 import Supply from './Supply';
 import Products from './Products';
 import History from './History';
+import LowStock from './LowStock';
 import Login from './Login';
 import api from './api';
 
 // ─── SIDEBAR ─────────────────────────────────────────────────────────────────
 
 const ROLE_MENUS = {
-  owner:    ['dashboard','products','pos','crm','supply','history'],
-  manager:  ['dashboard','products','pos','crm','supply','history'],
+  owner:    ['dashboard','products','pos','crm','supply','history','lowstock'],
+  manager:  ['dashboard','products','pos','crm','supply','history','lowstock'],
   cashier:  ['pos'],
-  warehouse:['products','supply'],
+  warehouse:['products','supply','lowstock'],
 };
 
 const MENU_ITEMS = [
-  { key: 'dashboard', path: '/',         icon: LayoutDashboard, label: 'Bosh Sahifa' },
-  { key: 'products',  path: '/products', icon: Package,         label: 'Mahsulotlar' },
-  { key: 'pos',       path: '/pos',      icon: ShoppingCart,    label: 'Kassa (POS)' },
-  { key: 'crm',       path: '/crm',      icon: Users,           label: 'Mijozlar (CRM)' },
-  { key: 'supply',    path: '/supply',   icon: Truck,           label: "Ta'minot" },
-  { key: 'history',   path: '/history',  icon: HistoryIcon,     label: 'Sotuvlar Tarixi' },
+  { key: 'dashboard', path: '/',          icon: LayoutDashboard, label: 'Bosh Sahifa' },
+  { key: 'products',  path: '/products',  icon: Package,          label: 'Mahsulotlar' },
+  { key: 'pos',       path: '/pos',       icon: ShoppingCart,     label: 'Kassa (POS)' },
+  { key: 'crm',       path: '/crm',       icon: Users,            label: 'Mijozlar (CRM)' },
+  { key: 'supply',    path: '/supply',    icon: Truck,            label: "Ta'minot" },
+  { key: 'history',   path: '/history',   icon: HistoryIcon,      label: 'Sotuvlar Tarixi' },
+  { key: 'lowstock',  path: '/lowstock',  icon: AlertTriangle,    label: 'Kam Zaxira & Buyurtma' },
 ];
 
 function Sidebar({ user, onLogout }) {
@@ -195,6 +197,7 @@ export default function App() {
             <Route path="/crm"      element={<CRM />} />
             <Route path="/supply"   element={<Supply />} />
             <Route path="/history"  element={<History />} />
+            <Route path="/lowstock" element={<LowStock />} />
           </Routes>
         </main>
       </div>
