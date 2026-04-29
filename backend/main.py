@@ -419,3 +419,169 @@ Quyidagi tovarlarni sotib olish tavsiya etiladi:
 
     success = await send_telegram(message)
     return {"success": success, "count": len(suggestions)}
+
+
+# ─── DEBTS (QARZ KITOBI) ──────────────────────────────────────────────────────
+
+class DebtCreate(BaseModel):
+    customer_id: int
+    total_amount: float
+    due_date: Optional[str] = None
+    notes: Optional[str] = ""
+    branch_id: int = 1
+
+class DebtPayIn(BaseModel):
+    amount: float
+    method: str = "cash"
+    notes: Optional[str] = ""
+
+@app.get("/debts/")
+async def read_debts(status: Optional[str] = None, current_user: models.User = Depends(auth.get_current_user), db: AsyncSession = Depends(get_db)):
+    return await crud.get_debts(db, status)
+
+@app.get("/debts/stats")
+async def read_debt_stats(current_user: models.User = Depends(auth.get_current_user), db: AsyncSession = Depends(get_db)):
+    return await crud.get_debt_stats(db)
+
+@app.get("/debts/customer/{customer_id}")
+async def read_customer_debts(customer_id: int, current_user: models.User = Depends(auth.get_current_user), db: AsyncSession = Depends(get_db)):
+    return await crud.get_customer_debts(db, customer_id)
+
+@app.post("/debts/")
+async def create_debt(debt: DebtCreate, current_user: models.User = Depends(auth.get_current_user), db: AsyncSession = Depends(get_db)):
+    from datetime import datetime as dt
+    data = debt.dict()
+    if data.get("due_date"):
+        data["due_date"] = dt.fromisoformat(data["due_date"])
+    new_debt = await crud.create_debt(db, data, current_user)
+
+    # Telegram notification
+    cust_res = await db.execute(__import__("sqlalchemy", fromlist=["select"]).select(models.Customer).where(models.Customer.id == debt.customer_id))
+    cust = cust_res.scalar_one_or_none()
+    if cust:
+        msg = f"""🔴 <b>QARZ QAYD ETILDI</b>
+👤 Mijoz: <b>{cust.full_name}</b>
+📱 Telefon: {cust.phone or "—"}
+💰 Qarz summasi: <b>{debt.total_amount:,.0f} so'm</b>
+📅 To'lash muddati: {debt.due_date or "Belgilanmagan"}
+📝 Izoh: {debt.notes or "—"}
+🕐 Sana: {dt.now().strftime("%d.%m.%Y %H:%M")}"""
+        await send_telegram(msg)
+
+    return new_debt
+
+@app.post("/debts/{debt_id}/pay")
+async def pay_debt(debt_id: int, pay: DebtPayIn, current_user: models.User = Depends(auth.get_current_user), db: AsyncSession = Depends(get_db)):
+    debt = await crud.pay_debt(db, debt_id, pay.amount, pay.method, current_user.id, pay.notes)
+    if not debt:
+        raise HTTPException(404, "Qarz topilmadi")
+    return debt
+
+
+# ─── WRITE-OFF (CHIQIMGA CHIQARISH) ───────────────────────────────────────────
+
+class WriteOffItemIn(BaseModel):
+    product_id: int
+    quantity: float
+    cost_at_time: float = 0.0
+
+class WriteOffCreate(BaseModel):
+    reason: str
+    branch_id: int = 1
+    items: List[WriteOffItemIn]
+
+@app.get("/write-offs/")
+async def read_write_offs(current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager)), db: AsyncSession = Depends(get_db)):
+    return await crud.get_write_offs(db)
+
+@app.post("/write-offs/")
+async def create_write_off(data: WriteOffCreate, current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager)), db: AsyncSession = Depends(get_db)):
+    return await crud.create_write_off(db, data.reason, [i.dict() for i in data.items], data.branch_id, current_user.id)
+
+
+# ─── SUPPLIER RETURNS (FIRMAGA QAYTARISH) ─────────────────────────────────────
+
+class SupplierReturnItemIn(BaseModel):
+    product_id: int
+    quantity: float
+    unit_cost: float = 0.0
+
+class SupplierReturnCreate(BaseModel):
+    supplier_id: int
+    branch_id: int = 1
+    reason: Optional[str] = ""
+    items: List[SupplierReturnItemIn]
+
+@app.get("/supplier-returns/")
+async def read_supplier_returns(current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager)), db: AsyncSession = Depends(get_db)):
+    return await crud.get_supplier_returns(db)
+
+@app.post("/supplier-returns/")
+async def create_supplier_return(data: SupplierReturnCreate, current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager)), db: AsyncSession = Depends(get_db)):
+    return await crud.create_supplier_return(db, data.dict(exclude={"items"}), [i.dict() for i in data.items], current_user.id)
+
+
+# ─── PROMOTIONS (AKSIYA) ──────────────────────────────────────────────────────
+
+class PromoItemIn(BaseModel):
+    product_id: int
+    promo_price: float
+
+class PromotionCreate(BaseModel):
+    name: str
+    discount_percent: float = 0.0
+    starts_at: str
+    ends_at: str
+    is_active: bool = True
+    items: List[PromoItemIn]
+
+@app.get("/promotions/")
+async def read_promotions(current_user: models.User = Depends(auth.get_current_user), db: AsyncSession = Depends(get_db)):
+    return await crud.get_promotions(db)
+
+@app.post("/promotions/")
+async def create_promotion(data: PromotionCreate, current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager)), db: AsyncSession = Depends(get_db)):
+    from datetime import datetime as dt
+    d = data.dict(exclude={"items"})
+    d["starts_at"] = dt.fromisoformat(d["starts_at"])
+    d["ends_at"] = dt.fromisoformat(d["ends_at"])
+    return await crud.create_promotion(db, d, [i.dict() for i in data.items])
+
+
+# ─── OWNER ANALYTICS ──────────────────────────────────────────────────────────
+
+@app.get("/analytics/owner")
+async def owner_analytics(period: str = "month", current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager)), db: AsyncSession = Depends(get_db)):
+    return await crud.get_owner_analytics(db, period)
+
+
+# ─── PASSWORD CHANGE ──────────────────────────────────────────────────────────
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+@app.put("/users/me/password")
+async def change_password(data: PasswordChange, current_user: models.User = Depends(auth.get_current_user), db: AsyncSession = Depends(get_db)):
+    if not auth.verify_password(data.current_password, current_user.hashed_password):
+        raise HTTPException(400, "Joriy parol noto'g'ri")
+    current_user.hashed_password = auth.get_password_hash(data.new_password)
+    await db.commit()
+    return {"message": "Parol muvaffaqiyatli o'zgartirildi"}
+
+
+# ─── BACKUP ───────────────────────────────────────────────────────────────────
+
+@app.post("/admin/backup")
+async def trigger_backup(current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner))):
+    """Qo'lda backup yaratish"""
+    import shutil, os
+    from datetime import datetime as dt
+    backup_dir = os.path.join(os.path.dirname(__file__), "backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    db_path = os.path.join(os.path.dirname(__file__), "dokon.db")
+    ts = dt.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = os.path.join(backup_dir, f"dokon_backup_{ts}.db")
+    shutil.copy2(db_path, backup_path)
+    await send_telegram(f"✅ <b>Backup yaratildi</b>\n📁 Fayl: dokon_backup_{ts}.db\n🕐 Vaqt: {dt.now().strftime('%d.%m.%Y %H:%M')}")
+    return {"success": True, "backup": f"dokon_backup_{ts}.db"}
