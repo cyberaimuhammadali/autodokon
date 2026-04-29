@@ -75,6 +75,10 @@ class Product(Base):
     description = Column(Text, nullable=True)
     price = Column(Float)
     cost_price = Column(Float, default=0.0)
+    promo_price = Column(Float, nullable=True)          # Aksiya narxi
+    promo_active = Column(Boolean, default=False)       # Aksiya yoqilganmi
+    promo_ends_at = Column(DateTime, nullable=True)     # Aksiya tugash vaqti
+    is_weight_based = Column(Boolean, default=False)    # Kg bo'yicha sotiladimi
     category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -249,3 +253,117 @@ class FinanceTransaction(Base):
     description = Column(Text, nullable=True)
     category = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ─── QARZ (CREDIT/DEBT) ───────────────────────────────────────────────────────
+
+class CustomerDebt(Base):
+    __tablename__ = "customer_debts"
+    id = Column(Integer, primary_key=True, index=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"))
+    receipt_id = Column(Integer, ForeignKey("receipts.id"), nullable=True)
+    branch_id = Column(Integer, ForeignKey("branches.id"), default=1)
+    total_amount = Column(Float)          # Umumiy qarz
+    paid_amount = Column(Float, default=0.0)    # To'langan qism
+    due_date = Column(DateTime, nullable=True)  # To'lash muddati
+    status = Column(String, default="open")     # open | partial | paid
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(Integer, ForeignKey("users.id"))
+
+    customer = relationship("Customer", backref="debts")
+    payments = relationship("DebtPayment", back_populates="debt")
+
+
+class DebtPayment(Base):
+    __tablename__ = "debt_payments"
+    id = Column(Integer, primary_key=True, index=True)
+    debt_id = Column(Integer, ForeignKey("customer_debts.id"))
+    amount = Column(Float)
+    method = Column(String, default="cash")
+    paid_at = Column(DateTime, default=datetime.utcnow)
+    cashier_id = Column(Integer, ForeignKey("users.id"))
+    notes = Column(Text, nullable=True)
+
+    debt = relationship("CustomerDebt", back_populates="payments")
+
+
+# ─── CHIQIMGA CHIQARISH (WRITE-OFF) ──────────────────────────────────────────
+
+class WriteOff(Base):
+    __tablename__ = "write_offs"
+    id = Column(Integer, primary_key=True, index=True)
+    branch_id = Column(Integer, ForeignKey("branches.id"), default=1)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    reason = Column(Text)  # Sabab: Muddati o'tdi, Shikastlangan, yo'qolgan
+    total_cost = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    items = relationship("WriteOffItem", back_populates="write_off")
+
+
+class WriteOffItem(Base):
+    __tablename__ = "write_off_items"
+    id = Column(Integer, primary_key=True, index=True)
+    write_off_id = Column(Integer, ForeignKey("write_offs.id"))
+    product_id = Column(Integer, ForeignKey("products.id"))
+    quantity = Column(Float)
+    cost_at_time = Column(Float, default=0.0)  # O'sha paytdagi tannarx
+
+    write_off = relationship("WriteOff", back_populates="items")
+    product = relationship("Product")
+
+
+# ─── FIRMAGA QAYTARISH (SUPPLIER RETURN) ─────────────────────────────────────
+
+class SupplierReturn(Base):
+    __tablename__ = "supplier_returns"
+    id = Column(Integer, primary_key=True, index=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"))
+    branch_id = Column(Integer, ForeignKey("branches.id"), default=1)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    reason = Column(Text, nullable=True)
+    total_amount = Column(Float, default=0.0)
+    status = Column(String, default="pending")  # pending | sent | confirmed
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    supplier = relationship("Supplier")
+    items = relationship("SupplierReturnItem", back_populates="supplier_return")
+
+
+class SupplierReturnItem(Base):
+    __tablename__ = "supplier_return_items"
+    id = Column(Integer, primary_key=True, index=True)
+    return_id = Column(Integer, ForeignKey("supplier_returns.id"))
+    product_id = Column(Integer, ForeignKey("products.id"))
+    quantity = Column(Float)
+    unit_cost = Column(Float, default=0.0)
+
+    supplier_return = relationship("SupplierReturn", back_populates="items")
+    product = relationship("Product")
+
+
+# ─── AKSIYA (PROMOTIONS) ─────────────────────────────────────────────────────
+
+class Promotion(Base):
+    __tablename__ = "promotions"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String)               # "Yangi yil aksiyasi"
+    discount_percent = Column(Float, default=0.0)
+    starts_at = Column(DateTime)
+    ends_at = Column(DateTime)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    items = relationship("PromotionItem", back_populates="promotion")
+
+
+class PromotionItem(Base):
+    __tablename__ = "promotion_items"
+    id = Column(Integer, primary_key=True, index=True)
+    promotion_id = Column(Integer, ForeignKey("promotions.id"))
+    product_id = Column(Integer, ForeignKey("products.id"))
+    promo_price = Column(Float)         # Chegirma narxi
+
+    promotion = relationship("Promotion", back_populates="items")
+    product = relationship("Product")
