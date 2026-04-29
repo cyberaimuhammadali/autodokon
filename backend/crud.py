@@ -370,3 +370,245 @@ async def create_branch(db: AsyncSession, data: dict):
     await db.commit()
     await db.refresh(branch)
     return branch
+
+
+# ─── DEBTS (QARZ) ─────────────────────────────────────────────────────────────
+
+async def get_debts(db: AsyncSession, status: str = None):
+    stmt = select(models.CustomerDebt)
+    if status:
+        stmt = stmt.where(models.CustomerDebt.status == status)
+    stmt = stmt.order_by(models.CustomerDebt.created_at.desc())
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+async def get_customer_debts(db: AsyncSession, customer_id: int):
+    result = await db.execute(
+        select(models.CustomerDebt).where(models.CustomerDebt.customer_id == customer_id)
+        .order_by(models.CustomerDebt.created_at.desc())
+    )
+    return result.scalars().all()
+
+async def create_debt(db: AsyncSession, data: dict, current_user: models.User):
+    debt = models.CustomerDebt(**data, created_by=current_user.id)
+    db.add(debt)
+    await db.commit()
+    await db.refresh(debt)
+    return debt
+
+async def pay_debt(db: AsyncSession, debt_id: int, amount: float, method: str, cashier_id: int, notes: str = ""):
+    result = await db.execute(select(models.CustomerDebt).where(models.CustomerDebt.id == debt_id))
+    debt = result.scalar_one_or_none()
+    if not debt:
+        return None
+
+    payment = models.DebtPayment(
+        debt_id=debt_id,
+        amount=amount,
+        method=method,
+        cashier_id=cashier_id,
+        notes=notes,
+    )
+    db.add(payment)
+
+    debt.paid_amount += amount
+    remaining = debt.total_amount - debt.paid_amount
+    if remaining <= 0:
+        debt.status = "paid"
+    elif debt.paid_amount > 0:
+        debt.status = "partial"
+
+    await db.commit()
+    await db.refresh(debt)
+    return debt
+
+async def get_debt_stats(db: AsyncSession):
+    all_debts = (await db.execute(select(models.CustomerDebt))).scalars().all()
+    total_owed = sum(d.total_amount - d.paid_amount for d in all_debts if d.status != "paid")
+    open_count = sum(1 for d in all_debts if d.status in ("open", "partial"))
+    return {"total_owed": total_owed, "open_count": open_count}
+
+
+# ─── WRITE-OFF (CHIQIMGA CHIQARISH) ───────────────────────────────────────────
+
+async def get_write_offs(db: AsyncSession, skip: int = 0, limit: int = 100):
+    result = await db.execute(
+        select(models.WriteOff).order_by(models.WriteOff.created_at.desc()).offset(skip).limit(limit)
+    )
+    return result.scalars().all()
+
+async def create_write_off(db: AsyncSession, reason: str, items_data: list, branch_id: int, user_id: int):
+    total_cost = sum(i.get("quantity", 0) * i.get("cost_at_time", 0) for i in items_data)
+    wo = models.WriteOff(branch_id=branch_id, user_id=user_id, reason=reason, total_cost=total_cost)
+    db.add(wo)
+    await db.flush()
+
+    for item in items_data:
+        woi = models.WriteOffItem(
+            write_off_id=wo.id,
+            product_id=item["product_id"],
+            quantity=item["quantity"],
+            cost_at_time=item.get("cost_at_time", 0),
+        )
+        db.add(woi)
+        # Reduce inventory
+        inv_result = await db.execute(
+            select(models.Inventory).where(
+                models.Inventory.product_id == item["product_id"],
+                models.Inventory.branch_id == branch_id,
+            )
+        )
+        inv = inv_result.scalar_one_or_none()
+        if inv:
+            inv.quantity = max(0, inv.quantity - item["quantity"])
+
+    await db.commit()
+    await db.refresh(wo)
+    return wo
+
+
+# ─── SUPPLIER RETURNS (FIRMAGA QAYTARISH) ─────────────────────────────────────
+
+async def get_supplier_returns(db: AsyncSession):
+    result = await db.execute(
+        select(models.SupplierReturn).order_by(models.SupplierReturn.created_at.desc())
+    )
+    return result.scalars().all()
+
+async def create_supplier_return(db: AsyncSession, data: dict, items_data: list, user_id: int):
+    sr = models.SupplierReturn(
+        supplier_id=data["supplier_id"],
+        branch_id=data.get("branch_id", 1),
+        user_id=user_id,
+        reason=data.get("reason", ""),
+        total_amount=sum(i["quantity"] * i.get("unit_cost", 0) for i in items_data),
+    )
+    db.add(sr)
+    await db.flush()
+
+    for item in items_data:
+        sri = models.SupplierReturnItem(
+            return_id=sr.id,
+            product_id=item["product_id"],
+            quantity=item["quantity"],
+            unit_cost=item.get("unit_cost", 0),
+        )
+        db.add(sri)
+        # Reduce inventory
+        inv_result = await db.execute(
+            select(models.Inventory).where(
+                models.Inventory.product_id == item["product_id"],
+                models.Inventory.branch_id == data.get("branch_id", 1),
+            )
+        )
+        inv = inv_result.scalar_one_or_none()
+        if inv:
+            inv.quantity = max(0, inv.quantity - item["quantity"])
+
+    await db.commit()
+    await db.refresh(sr)
+    return sr
+
+
+# ─── PROMOTIONS (AKSIYA) ──────────────────────────────────────────────────────
+
+async def get_promotions(db: AsyncSession):
+    result = await db.execute(select(models.Promotion).order_by(models.Promotion.starts_at.desc()))
+    return result.scalars().all()
+
+async def create_promotion(db: AsyncSession, data: dict, items_data: list):
+    promo = models.Promotion(
+        name=data["name"],
+        discount_percent=data.get("discount_percent", 0),
+        starts_at=data["starts_at"],
+        ends_at=data["ends_at"],
+        is_active=data.get("is_active", True),
+    )
+    db.add(promo)
+    await db.flush()
+
+    for item in items_data:
+        pi = models.PromotionItem(
+            promotion_id=promo.id,
+            product_id=item["product_id"],
+            promo_price=item["promo_price"],
+        )
+        db.add(pi)
+        # Also update product's promo_price
+        prod_result = await db.execute(select(models.Product).where(models.Product.id == item["product_id"]))
+        prod = prod_result.scalar_one_or_none()
+        if prod:
+            prod.promo_price = item["promo_price"]
+            prod.promo_active = True
+            prod.promo_ends_at = data["ends_at"]
+
+    await db.commit()
+    await db.refresh(promo)
+    return promo
+
+
+# ─── OWNER ANALYTICS ──────────────────────────────────────────────────────────
+
+async def get_owner_analytics(db: AsyncSession, period: str = "month"):
+    today = date.today()
+    if period == "month":
+        start = today.replace(day=1)
+    elif period == "week":
+        start = today - timedelta(days=today.weekday())
+    else:
+        start = today
+
+    start_dt = datetime.combine(start, time.min)
+    end_dt = datetime.combine(today, time.max)
+
+    receipts_res = await db.execute(
+        select(models.Receipt).where(
+            models.Receipt.created_at >= start_dt,
+            models.Receipt.created_at <= end_dt,
+        )
+    )
+    receipts = receipts_res.scalars().all()
+
+    total_revenue = sum(r.total_amount for r in receipts)
+    total_receipts = len(receipts)
+
+    # Cost of goods sold
+    total_cost = 0.0
+    for r in receipts:
+        items_res = await db.execute(
+            select(models.ReceiptItem, models.Product).join(
+                models.Product, models.Product.id == models.ReceiptItem.product_id
+            ).where(models.ReceiptItem.receipt_id == r.id)
+        )
+        for item, product in items_res.all():
+            total_cost += item.quantity * product.cost_price
+
+    profit = total_revenue - total_cost
+    margin = (profit / total_revenue * 100) if total_revenue > 0 else 0
+
+    # Best hours
+    hour_sales = {}
+    for r in receipts:
+        h = r.created_at.hour
+        hour_sales[h] = hour_sales.get(h, 0) + r.total_amount
+    best_hour = max(hour_sales, key=hour_sales.get) if hour_sales else None
+
+    # Daily breakdown
+    daily = {}
+    for r in receipts:
+        day_str = r.created_at.strftime("%d-%b")
+        daily[day_str] = daily.get(day_str, 0) + r.total_amount
+    daily_chart = [{"name": k, "sotuv": v} for k, v in sorted(daily.items())]
+
+    return {
+        "period": period,
+        "total_revenue": total_revenue,
+        "total_cost": total_cost,
+        "profit": profit,
+        "margin_percent": round(margin, 1),
+        "total_receipts": total_receipts,
+        "avg_receipt": round(total_revenue / total_receipts, 0) if total_receipts else 0,
+        "best_hour": best_hour,
+        "hour_sales": hour_sales,
+        "daily_chart": daily_chart,
+    }
