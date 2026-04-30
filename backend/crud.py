@@ -612,3 +612,183 @@ async def get_owner_analytics(db: AsyncSession, period: str = "month"):
         "hour_sales": hour_sales,
         "daily_chart": daily_chart,
     }
+
+
+# ─── PRODUCTS UPDATE ──────────────────────────────────────────────────────────
+
+async def update_product(db: AsyncSession, product_id: int, data: dict):
+    result = await db.execute(select(models.Product).where(models.Product.id == product_id))
+    product = result.scalar_one_or_none()
+    if not product:
+        return None
+    for key, value in data.items():
+        if hasattr(product, key) and value is not None:
+            setattr(product, key, value)
+    await db.commit()
+    await db.refresh(product)
+    return product
+
+async def delete_product(db: AsyncSession, product_id: int):
+    result = await db.execute(select(models.Product).where(models.Product.id == product_id))
+    product = result.scalar_one_or_none()
+    if product:
+        product.is_active = False
+        await db.commit()
+    return product
+
+async def get_inventory(db: AsyncSession, branch_id: int = 1):
+    result = await db.execute(
+        select(models.Product, models.Inventory).outerjoin(
+            models.Inventory, models.Inventory.product_id == models.Product.id
+        ).where(models.Product.is_active == True)
+    )
+    return result.all()
+
+async def update_inventory(db: AsyncSession, product_id: int, branch_id: int, quantity: float, min_quantity: float = None):
+    result = await db.execute(
+        select(models.Inventory).where(
+            models.Inventory.product_id == product_id,
+            models.Inventory.branch_id == branch_id,
+        )
+    )
+    inv = result.scalar_one_or_none()
+    if inv:
+        inv.quantity = quantity
+        if min_quantity is not None:
+            inv.min_quantity = min_quantity
+    else:
+        inv = models.Inventory(product_id=product_id, branch_id=branch_id, quantity=quantity,
+                               min_quantity=min_quantity or 5.0)
+        db.add(inv)
+    await db.commit()
+
+
+# ─── ATTENDANCE (DAVOMAT) ──────────────────────────────────────────────────────
+
+async def check_in(db: AsyncSession, user_id: int, branch_id: int = 1, notes: str = ""):
+    today_str = date.today().isoformat()
+    # Check if already checked in today
+    existing = await db.execute(
+        select(models.Attendance).where(
+            models.Attendance.user_id == user_id,
+            models.Attendance.work_date == today_str,
+        )
+    )
+    att = existing.scalar_one_or_none()
+    if att:
+        return att, "already_in"
+
+    new_att = models.Attendance(
+        user_id=user_id,
+        branch_id=branch_id,
+        work_date=today_str,
+        check_in_at=datetime.utcnow(),
+        notes=notes,
+    )
+    db.add(new_att)
+    await db.commit()
+    await db.refresh(new_att)
+    return new_att, "checked_in"
+
+async def check_out(db: AsyncSession, user_id: int):
+    today_str = date.today().isoformat()
+    result = await db.execute(
+        select(models.Attendance).where(
+            models.Attendance.user_id == user_id,
+            models.Attendance.work_date == today_str,
+            models.Attendance.check_out_at == None,
+        )
+    )
+    att = result.scalar_one_or_none()
+    if not att:
+        return None
+    att.check_out_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(att)
+    return att
+
+async def get_attendance(db: AsyncSession, work_date: str = None, user_id: int = None):
+    stmt = select(models.Attendance)
+    if work_date:
+        stmt = stmt.where(models.Attendance.work_date == work_date)
+    if user_id:
+        stmt = stmt.where(models.Attendance.user_id == user_id)
+    stmt = stmt.order_by(models.Attendance.check_in_at.desc())
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+async def get_today_attendance(db: AsyncSession, user_id: int):
+    today_str = date.today().isoformat()
+    result = await db.execute(
+        select(models.Attendance).where(
+            models.Attendance.user_id == user_id,
+            models.Attendance.work_date == today_str,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+# ─── DAILY EXPENSES ───────────────────────────────────────────────────────────
+
+async def get_daily_expenses(db: AsyncSession, expense_date: str = None, branch_id: int = 1):
+    stmt = select(models.DailyExpense).where(models.DailyExpense.branch_id == branch_id)
+    if expense_date:
+        stmt = stmt.where(models.DailyExpense.expense_date == expense_date)
+    stmt = stmt.order_by(models.DailyExpense.created_at.desc())
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+async def create_daily_expense(db: AsyncSession, data: dict, user_id: int):
+    expense = models.DailyExpense(**data, user_id=user_id)
+    db.add(expense)
+    await db.commit()
+    await db.refresh(expense)
+    return expense
+
+async def get_expense_summary(db: AsyncSession, branch_id: int = 1, period: str = "month"):
+    today = date.today()
+    if period == "month":
+        start = today.replace(day=1).isoformat()
+    elif period == "week":
+        start = (today - timedelta(days=today.weekday())).isoformat()
+    else:
+        start = today.isoformat()
+
+    result = await db.execute(
+        select(models.DailyExpense).where(
+            models.DailyExpense.branch_id == branch_id,
+            models.DailyExpense.expense_date >= start,
+        )
+    )
+    expenses = result.scalars().all()
+    by_category = {}
+    for e in expenses:
+        by_category[e.category] = by_category.get(e.category, 0) + e.amount
+    return {
+        "total": sum(e.amount for e in expenses),
+        "by_category": by_category,
+        "count": len(expenses),
+    }
+
+
+# ─── USER (EMPLOYEE) MANAGEMENT ───────────────────────────────────────────────
+
+async def update_user(db: AsyncSession, user_id: int, data: dict):
+    result = await db.execute(select(models.User).where(models.User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        return None
+    for key, value in data.items():
+        if hasattr(user, key) and value is not None:
+            setattr(user, key, value)
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+async def deactivate_user(db: AsyncSession, user_id: int):
+    result = await db.execute(select(models.User).where(models.User.id == user_id))
+    user = result.scalar_one_or_none()
+    if user:
+        user.is_active = False
+        await db.commit()
+    return user
