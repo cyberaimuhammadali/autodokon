@@ -162,7 +162,10 @@ class ReceiptItem(Base):
     receipt_id = Column(Integer, ForeignKey("receipts.id"))
     product_id = Column(Integer, ForeignKey("products.id"))
     quantity = Column(Float)
-    price = Column(Float)
+    price = Column(Float)                          # Standart narx
+    custom_price = Column(Float, nullable=True)    # Menejer bergan maxsus narx
+    custom_note = Column(String, nullable=True)    # Optom, VIP, izoh
+    approved_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     total_price = Column(Float)
 
     receipt = relationship("Receipt", back_populates="items")
@@ -363,7 +366,39 @@ class PromotionItem(Base):
     id = Column(Integer, primary_key=True, index=True)
     promotion_id = Column(Integer, ForeignKey("promotions.id"))
     product_id = Column(Integer, ForeignKey("products.id"))
-    promo_price = Column(Float)         # Chegirma narxi
+    promo_price = Column(Float)
 
     promotion = relationship("Promotion", back_populates="items")
     product = relationship("Product")
+
+
+# ─── DAVOMAT (ATTENDANCE) ───────────────────────────────────────────────────
+
+class Attendance(Base):
+    __tablename__ = "attendance"
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    branch_id = Column(Integer, ForeignKey("branches.id"), default=1)
+    check_in_at = Column(DateTime, default=datetime.utcnow)
+    check_out_at = Column(DateTime, nullable=True)
+    status = Column(String, default="present")  # present | late | early_leave
+    notes = Column(Text, nullable=True)
+    work_date = Column(String)                  # YYYY-MM-DD format
+
+    user = relationship("User", backref="attendances")
+
+
+# ─── KUNLIK XARAJATLAR (DAILY EXPENSE) ───────────────────────────────────────
+
+class DailyExpense(Base):
+    __tablename__ = "daily_expenses"
+    id = Column(Integer, primary_key=True, index=True)
+    branch_id = Column(Integer, ForeignKey("branches.id"), default=1)
+    user_id = Column(Integer, ForeignKey("users.id"))     # Kim kirdi
+    amount = Column(Float)
+    category = Column(String)   # ijara | elektr | maosh | kommunal | boshqa
+    description = Column(Text, nullable=True)
+    expense_date = Column(String)  # YYYY-MM-DD
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", backref="daily_expenses")
