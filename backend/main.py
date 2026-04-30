@@ -585,3 +585,214 @@ async def trigger_backup(current_user: models.User = Depends(auth.require_roles(
     shutil.copy2(db_path, backup_path)
     await send_telegram(f"✅ <b>Backup yaratildi</b>\n📁 Fayl: dokon_backup_{ts}.db\n🕐 Vaqt: {dt.now().strftime('%d.%m.%Y %H:%M')}")
     return {"success": True, "backup": f"dokon_backup_{ts}.db"}
+
+
+# ─── ATTENDANCE (DAVOMAT) ─────────────────────────────────────────────────────
+
+@app.post("/attendance/check-in")
+async def do_check_in(current_user: models.User = Depends(auth.get_current_user), db: AsyncSession = Depends(get_db)):
+    att, status = await crud.check_in(db, current_user.id, getattr(current_user, 'branch_id', 1))
+    if status == "already_in":
+        return {"status": "already_in", "message": "Bugun allaqachon keldiniz", "attendance": {
+            "check_in_at": att.check_in_at.isoformat() if att.check_in_at else None,
+            "check_out_at": att.check_out_at.isoformat() if att.check_out_at else None,
+        }}
+    # Telegram
+    from datetime import datetime as dt2
+    await send_telegram(f"✅ <b>KELDI</b>\n👤 {current_user.full_name}\n🕐 {dt2.now().strftime('%H:%M')}")
+    return {"status": "checked_in", "message": f"Xush kelibsiz, {current_user.full_name}!", "attendance": {
+        "check_in_at": att.check_in_at.isoformat() if att.check_in_at else None,
+    }}
+
+@app.post("/attendance/check-out")
+async def do_check_out(current_user: models.User = Depends(auth.get_current_user), db: AsyncSession = Depends(get_db)):
+    att = await crud.check_out(db, current_user.id)
+    if not att:
+        return {"status": "error", "message": "Bugun kirish qayd etilmagan"}
+    # Work hours
+    if att.check_in_at and att.check_out_at:
+        delta = att.check_out_at - att.check_in_at
+        hours = delta.seconds // 3600
+        minutes = (delta.seconds % 3600) // 60
+        from datetime import datetime as dt2
+        await send_telegram(f"👋 <b>KETDI</b>\n👤 {current_user.full_name}\n🕐 {dt2.now().strftime('%H:%M')}\n⏱️ Ishlagan vaqt: {hours}s {minutes}d")
+        return {"status": "checked_out", "message": f"Xayr, {current_user.full_name}! {hours}s {minutes}d ishladingiz.", "hours": hours, "minutes": minutes}
+    return {"status": "checked_out"}
+
+@app.get("/attendance/today")
+async def today_attendance(current_user: models.User = Depends(auth.get_current_user), db: AsyncSession = Depends(get_db)):
+    att = await crud.get_today_attendance(db, current_user.id)
+    if not att:
+        return {"status": "not_checked_in"}
+    return {
+        "status": "checked_in" if not att.check_out_at else "checked_out",
+        "check_in_at": att.check_in_at.isoformat() if att.check_in_at else None,
+        "check_out_at": att.check_out_at.isoformat() if att.check_out_at else None,
+    }
+
+@app.get("/attendance/")
+async def list_attendance(work_date: Optional[str] = None, user_id: Optional[int] = None,
+                          current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager)),
+                          db: AsyncSession = Depends(get_db)):
+    return await crud.get_attendance(db, work_date, user_id)
+
+
+# ─── DAILY EXPENSES ───────────────────────────────────────────────────────────
+
+class ExpenseCreate(BaseModel):
+    amount: float
+    category: str
+    description: Optional[str] = ""
+    expense_date: Optional[str] = None
+    branch_id: int = 1
+
+@app.get("/daily-expenses/")
+async def list_expenses(expense_date: Optional[str] = None, branch_id: int = 1,
+                        current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager)),
+                        db: AsyncSession = Depends(get_db)):
+    return await crud.get_daily_expenses(db, expense_date, branch_id)
+
+@app.get("/daily-expenses/summary")
+async def expense_summary(period: str = "month", branch_id: int = 1,
+                          current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager)),
+                          db: AsyncSession = Depends(get_db)):
+    return await crud.get_expense_summary(db, branch_id, period)
+
+@app.post("/daily-expenses/")
+async def create_expense(expense: ExpenseCreate,
+                         current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager)),
+                         db: AsyncSession = Depends(get_db)):
+    from datetime import date as d
+    data = expense.dict()
+    data["expense_date"] = data.get("expense_date") or d.today().isoformat()
+    return await crud.create_daily_expense(db, data, current_user.id)
+
+@app.delete("/daily-expenses/{expense_id}")
+async def delete_expense(expense_id: int,
+                         current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner)),
+                         db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import delete
+    await db.execute(delete(models.DailyExpense).where(models.DailyExpense.id == expense_id))
+    await db.commit()
+    return {"success": True}
+
+
+# ─── EMPLOYEE MANAGEMENT ──────────────────────────────────────────────────────
+
+class UserCreate(BaseModel):
+    username: str
+    full_name: str
+    password: str
+    role: str
+    pin_code: Optional[str] = None
+    branch_id: int = 1
+
+class UserUpdate(BaseModel):
+    full_name: Optional[str] = None
+    role: Optional[str] = None
+    pin_code: Optional[str] = None
+    is_active: Optional[bool] = None
+
+@app.get("/employees/")
+async def list_employees(current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager)),
+                         db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(models.User).order_by(models.User.full_name))
+    users = result.scalars().all()
+    return [{"id": u.id, "username": u.username, "full_name": u.full_name, "role": u.role,
+             "pin_code": u.pin_code, "is_active": u.is_active, "branch_id": u.branch_id} for u in users]
+
+@app.post("/employees/")
+async def create_employee(user: UserCreate,
+                          current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner)),
+                          db: AsyncSession = Depends(get_db)):
+    from models import RoleEnum
+    try:
+        role_enum = RoleEnum[user.role]
+    except KeyError:
+        raise HTTPException(400, f"Noto'g'ri rol: {user.role}")
+    data = {
+        "username": user.username,
+        "full_name": user.full_name,
+        "hashed_password": auth.get_password_hash(user.password),
+        "role": role_enum,
+        "pin_code": user.pin_code or "0000",
+        "branch_id": user.branch_id,
+        "is_active": True,
+    }
+    return await crud.create_user(db, data)
+
+@app.put("/employees/{user_id}")
+async def update_employee(user_id: int, data: UserUpdate,
+                          current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner)),
+                          db: AsyncSession = Depends(get_db)):
+    update_data = {k: v for k, v in data.dict().items() if v is not None}
+    if "role" in update_data:
+        from models import RoleEnum
+        try:
+            update_data["role"] = RoleEnum[update_data["role"]]
+        except KeyError:
+            raise HTTPException(400, "Noto'g'ri rol")
+    return await crud.update_user(db, user_id, update_data)
+
+@app.delete("/employees/{user_id}")
+async def deactivate_employee(user_id: int,
+                              current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner)),
+                              db: AsyncSession = Depends(get_db)):
+    return await crud.deactivate_user(db, user_id)
+
+
+# ─── PRODUCT UPDATE/DELETE ────────────────────────────────────────────────────
+
+class ProductUpdate(BaseModel):
+    name: Optional[str] = None
+    price: Optional[float] = None
+    cost_price: Optional[float] = None
+    barcode: Optional[str] = None
+    description: Optional[str] = None
+    category_id: Optional[int] = None
+    is_weight_based: Optional[bool] = None
+    promo_price: Optional[float] = None
+    promo_active: Optional[bool] = None
+
+@app.put("/products/{product_id}")
+async def update_product(product_id: int, data: ProductUpdate,
+                         current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager)),
+                         db: AsyncSession = Depends(get_db)):
+    updated = await crud.update_product(db, product_id, data.dict(exclude_none=True))
+    if not updated:
+        raise HTTPException(404, "Mahsulot topilmadi")
+    return updated
+
+@app.delete("/products/{product_id}")
+async def delete_product(product_id: int,
+                         current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager)),
+                         db: AsyncSession = Depends(get_db)):
+    return await crud.delete_product(db, product_id)
+
+@app.get("/inventory/")
+async def get_inventory_list(branch_id: int = 1,
+                             current_user: models.User = Depends(auth.get_current_user),
+                             db: AsyncSession = Depends(get_db)):
+    items = await crud.get_inventory(db, branch_id)
+    result = []
+    for product, inv in items:
+        result.append({
+            "product_id": product.id,
+            "name": product.name,
+            "barcode": product.barcode,
+            "price": product.price,
+            "cost_price": product.cost_price,
+            "quantity": inv.quantity if inv else 0,
+            "min_quantity": inv.min_quantity if inv else 5,
+            "is_weight_based": product.is_weight_based,
+            "promo_active": product.promo_active,
+            "promo_price": product.promo_price,
+        })
+    return result
+
+@app.put("/inventory/{product_id}")
+async def update_inv(product_id: int, quantity: float, min_quantity: float = None, branch_id: int = 1,
+                     current_user: models.User = Depends(auth.require_roles(models.RoleEnum.owner, models.RoleEnum.manager, models.RoleEnum.warehouse)),
+                     db: AsyncSession = Depends(get_db)):
+    await crud.update_inventory(db, product_id, branch_id, quantity, min_quantity)
+    return {"success": True}
